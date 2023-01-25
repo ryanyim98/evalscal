@@ -1,0 +1,33 @@
+#Load libraries
+
+require(knitr)    #Use RMarkdown
+require(tidyverse)    #Melts data from wide to long format; use instead of reshape2 library
+library(ggplot2)
+library(corrplot)
+library(dplyr)
+library(tidylog)
+library(broom)
+library(lm.beta)
+library(rcartocolor)
+library(emmeans)
+library(ggcorrplot)
+library(brms)
+library(fs)
+library(bayestestR)
+library(ggpubr)
+
+require(lme4)
+require(corrplot)
+library(ggpmisc)
+library(R.matlab)
+library("PerformanceAnalytics")
+library(lmerTest)
+library(sjPlot)
+library(psych)
+library(ggcorrplot2)
+library(poLCA)
+library(qgraph)
+library(factoextra)
+library(ggfortify)
+library(patchwork)
+library(parameters)

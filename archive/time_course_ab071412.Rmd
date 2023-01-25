@@ -1,0 +1,250 @@
+---
+title: "time_course_ab071412"
+author: "Ryan Yan"
+date: "2023-01-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source(here::here("load_libraries.R"))
+```
+## directories
+
+```{r}
+data_dir <- "/Users/rh/Desktop/first_year/FYP/fmri/ab071412/"
+tc_dir <- paste0(data_dir,"raw_tcs/")
+```
+
+## read daya
+
+### time course data
+
+```{r}
+tc_files <- list.files(tc_dir)
+
+tc_mat <- {}
+
+for (i in 1:length(tc_files)){
+  temp_var <- read_csv(paste0(tc_dir,tc_files[i]),col_names = FALSE)
+  name_obj <- strsplit(tc_files[i],'_')[[1]]
+  names(temp_var) <- paste0(name_obj[2],"_",name_obj[3])
+  tc_mat = cbind(tc_mat,as.matrix(temp_var))
+}
+
+tc_mat <- as.data.frame(tc_mat)
+```
+
+### add mid behavioral data
+
+```{r}
+mid <- read_csv(paste0(data_dir,"mid_matrix.csv"))
+
+mid <- mid%>%
+  rowwise()%>%
+  mutate(cue_value_num = as.numeric(paste0(strsplit(as.character(cue_value),"")[[1]][1],
+                                strsplit(as.character(cue_value),"")[[1]][3])),
+         trial_gain_num = if_else(hit == 1 & cue_value_num >= 0, cue_value_num, 
+                                  if_else(hit == 1 & cue_value_num < 0, 0,
+                                          if_else(hit == 0 & cue_value_num >= 0, 0,
+                                                  if_else(hit == 0 & cue_value_num < 0, cue_value_num, -99)))))
+
+## get recent rolling mean
+mid <- mid%>%
+  group_by(TR)%>%
+  mutate(recent_avg_gain = lag(rollmean(trial_gain_num, 5,fill = c(0,0,0), align = "right"),1),
+         prediction_error_approx = trial_gain_num - recent_avg_gain,
+         recent_avg_winpercent = rollmean(hit, 5, na.pad = TRUE, align = "right"))%>%
+  mutate(recent_avg_gain = if_else(is.na(recent_avg_gain), 0, recent_avg_gain),
+         prediction_error_approx = if_else(is.na(prediction_error_approx), 0, prediction_error_approx))
+
+df_mid <- cbind(mid,tc_mat)
+
+df_mid$cue_value <- factor(df_mid$cue_value, levels = c( "-$5","-$1","-$0","+$0","+$1","+$5"))
+
+df_mid$TR <- as.factor(df_mid$TR)
+
+df_mid$recent_avg_winpercent[is.na(df_mid$recent_avg_winpercent)] <- df_mid$total_winpercent[is.na(df_mid$recent_avg_winpercent)]
+```
+
+## behavioral analysis
+
+```{r}
+mid <- unique(mid%>%
+  dplyr::select(-TR))
+
+ggplot(mid%>%
+         group_by(cue_value)%>%
+         summarise(hit_rate = mean(hit),
+                   hit_rate_se = sd(hit)/1), aes(x = cue_value, y = hit_rate, fill = cue_value))+
+  geom_col()+
+  geom_errorbar(aes(ymin = hit_rate - hit_rate_se, ymax = hit_rate + hit_rate_se),width = 0.2)+
+  scale_fill_viridis_d()
+
+#winpercent
+ggplot(mid, aes(x = trial))+
+  geom_line(aes(y = total_winpercent), color = "red")+ #from start to finish
+  geom_line(aes(y = binned_winpercent), color = "blue")#by cue type
+
+# prediction error
+ggplot(mid, aes(x = trial))+
+  geom_line(aes(y = recent_avg_gain), color = "cyan")+
+  geom_line(aes(y = trial_gain_num), color = "brown")
+```
+
+## fmri analysis
+
+### mPFC
+```{r}
+summary(lm(b_mpfc ~ r_mpfc + l_mpfc, df_mid))
+```
+
+```{r}
+ggplot(df_mid, aes(x = TR, y = b_mpfc, color = cue_value))+
+  stat_summary(aes(group = cue_value),geom = "line",size=2)+
+  scale_color_viridis_d()+
+  annotate("rect", xmin = 3.5, xmax = 4.5, ymin = -0.75, ymax = 0.75, 
+           alpha = .5)
+
+aov1 <- aov(b_mpfc ~ cue_value,df_mid%>%filter(TR == 4))
+summary(aov1)
+
+pairs(lsmeans(aov1, specs = "cue_value"), adjust = "tukey")
+
+p1 <- plot_model(aov1, type = "pred", terms = c("cue_value"))+
+  geom_line(size=2)
+```
+
+```{r fig.width=6,fig.height=12}
+aov2r <- aov(r_mpfc ~ cue_value,df_mid%>%filter(TR == 4))
+summary(aov2r)
+
+p2r <- plot_model(aov2r, type = "pred", terms = c("cue_value"))+
+  geom_line(size=2)
+
+aov2l <- aov(l_mpfc ~ cue_value,df_mid%>%filter(TR == 4))
+summary(aov1l)
+
+p1l <- plot_model(aov1l, type = "pred", terms = c("cue_value"))+
+  geom_line(size=2)
+
+p1 /p1r / p1l
+```
+
+```{r}
+cor_mat <- cor(df_mid%>%
+  filter(TR == 4)%>%
+  ungroup()%>%
+  dplyr::select(trial_gain_num,recent_avg_gain,prediction_error_approx,recent_avg_winpercent))
+
+p_mat <- cor_pmat(df_mid%>%
+  filter(TR == 4)%>%
+  ungroup()%>%
+  dplyr::select(trial_gain_num,recent_avg_gain,prediction_error_approx,recent_avg_winpercent))
+
+ggcorrplot.mixed(cor_mat, lower = "number",upper = "ellipse", p.mat = p_mat, insig = "label_sig")
+```
+
+## linear model
+```{r}
+df_lm <- df_mid%>%
+  filter(TR == 4)%>%
+  dplyr::select(trial, hit, TR, cue_value, cue_value_num, b_mpfc, recent_avg_gain, prediction_error_approx,recent_avg_winpercent)
+
+ggplot(df_lm,aes(x = cue_value, y = b_mpfc))+
+  stat_summary()+
+  scale_x_discrete(limits = c( "-$5","-$1","-$0","+$0","+$1","+$5"))
+
+ggplot(df_lm,aes(x = cue_value_num, y = b_mpfc))+
+  stat_summary()+
+  labs(x = "$")
+
+df_lm$recent_avg_winpercent <- as.numeric(df_lm$recent_avg_winpercent)
+
+lm_b_mpfc1 <- lm(b_mpfc ~ cue_value,df_lm)
+
+plot_model(lm_b_mpfc1, type = "pred", terms = "cue_value")+
+  geom_line()
+
+lm_b_mpfc2 <- lm(b_mpfc ~ cue_value + recent_avg_gain + recent_avg_winpercent,df_lm)
+lm_b_mpfc3 <- lm(b_mpfc ~ cue_value + prediction_error_approx +  recent_avg_winpercent,df_lm)
+
+anova(lm_b_mpfc1,lm_b_mpfc2,lm_b_mpfc3)
+
+summary(lm_b_mpfc3)
+
+plot_model(lm_b_mpfc2, type = "pred", terms = c("cue_value","recent_avg_gain"))+
+  geom_line()
+
+plot_model(lm_b_mpfc3, type = "pred", terms = c("cue_value","prediction_error_approx[0,0.5,1]"))+
+  geom_line()
+```
+
+### caudate
+```{r}
+ggplot(df_mid, aes(x = TR, y = b_caudate, color = cue_value))+
+  stat_summary(aes(group = cue_value),geom = "line",size=2)+
+  scale_color_viridis_d()
+
+aov2 <- aov(b_caudate ~ cue_value,df_mid%>%filter(TR == 4))
+summary(aov2)
+
+pairs(lsmeans(aov2, specs = "cue_value"), adjust = "tukey")
+
+p2 <- plot_model(aov2, type = "pred", terms = c("cue_value"))+
+  geom_line(size=2)
+```
+
+```{r fig.width=3,fig.height=6}
+aov2r <- aov(r_caudate ~ cue_value,df_mid%>%filter(TR == 4))
+summary(aov2r)
+
+p2r <- plot_model(aov2r, type = "pred", terms = c("cue_value"))+
+  geom_line(size=2)
+
+aov2l <- aov(l_caudate ~ cue_value,df_mid%>%filter(TR == 4))
+summary(aov2l)
+
+p2l <- plot_model(aov2l, type = "pred", terms = c("cue_value"))+
+  geom_line(size=2)
+
+p2 /p2r / p2l
+```
+
+## linear model
+```{r}
+df_lm2 <- df_mid%>%
+  filter(TR == 4)%>%
+  dplyr::select(trial, hit, TR, cue_value, cue_value_num, b_caudate, recent_avg_gain, prediction_error_approx,recent_avg_winpercent)
+
+ggplot(df_lm2,aes(x = cue_value, y = b_caudate))+
+  stat_summary()+
+  scale_x_discrete(limits = c( "-$5","-$1","-$0","+$0","+$1","+$5"))
+
+ggplot(df_lm2,aes(x = cue_value_num, y = b_caudate))+
+  stat_summary()+
+  labs(x = "$")
+
+df_lm2$recent_avg_winpercent <- as.numeric(df_lm2$recent_avg_winpercent)
+
+lm_b_caudate1 <- lm(b_caudate ~ cue_value,df_lm2)
+
+plot_model(lm_b_caudate1, type = "pred", terms = "cue_value")+
+  geom_line()
+
+lm_b_caudate2 <- lm(b_caudate ~ cue_value + recent_avg_gain + recent_avg_winpercent,df_lm2)
+lm_b_caudate3 <- lm(b_caudate ~ cue_value + prediction_error_approx +  recent_avg_winpercent,df_lm2)
+
+anova(lm_b_caudate1,lm_b_caudate2,lm_b_caudate3)
+
+summary(lm_b_caudate3)
+
+plot_model(lm_b_caudate2, type = "pred", terms = c("cue_value","recent_avg_gain"))+
+  geom_line()
+
+plot_model(lm_b_caudate3, type = "pred", terms = c("cue_value","prediction_error_approx"))+
+  geom_line()
+
+plot_model(lm_b_caudate3, type = "pred", terms = c("cue_value","recent_avg_winpercent[0,0.5,1]"))+
+  geom_line()
+```

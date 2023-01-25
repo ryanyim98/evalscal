@@ -1,0 +1,504 @@
+---
+title: "time_course_multimid"
+author: "Ryan Yan"
+date: "2023-01-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source(here::here("load_libraries.R"))
+```
+
+```{r}
+purpleOrange_palette6 = c("purple4","purple2","plum3","gold","orange","goldenrod")
+purpleOrange_palette3 = c("purple4","plum3","orange")
+purpleOrange_palette2 = c("purple4","orange")
+
+```
+
+```{r}
+data_dir <- "/Users/rh/Desktop/evalscal/multimid/"
+tc_multimid <- read_csv(paste0(data_dir,"timecourses_N18_long_woOutlier.csv"))
+
+unique(tc_multimid$cue_value)
+
+tc_multimid <- tc_multimid%>%
+  mutate(cue_value = if_else(cue_value == "($1)", "-$1", 
+                             if_else(cue_value == "($5)","-$5", 
+                                     if_else(cue_value %in% c("$0","$1","$5"),paste0("+",cue_value),cue_value))),
+         trial_gain = if_else(trial_gain == "($1)", "-$1", 
+                             if_else(trial_gain == "($5)","-$5", 
+                                     if_else(trial_gain %in% c("$0","$1","$5"),paste0("+",trial_gain),trial_gain))))
+tc_multimid$cue_value <- factor(tc_multimid$cue_value, levels = c( "-$5","-$1","-$0","+$0","+$1","+$5"))
+tc_multimid$trial_gain <- factor(tc_multimid$trial_gain, levels = c( "-$5","-$1","-$0","+$0","+$1","+$5"))
+```
+
+```{r}
+vois <- c("nacc","mpfc","anteriorinsula","anteriorcingulate","v1","wm")
+
+tc_multimid_mb1 <- tc_multimid%>%
+  filter(mb == 1, voi %in% vois)
+
+tc_multimid_mb1$voi <- factor(tc_multimid_mb1$voi,level = vois)
+```
+
+```{r}
+head(tc_multimid_mb1)
+subj <- unique(tc_multimid_mb1$subject)
+
+tc_multimid_mb1 <- tc_multimid_mb1%>%
+  rowwise()%>%
+  mutate(cue_value_num = as.numeric(paste0(strsplit(as.character(cue_value),"")[[1]][1],
+                                strsplit(as.character(cue_value),"")[[1]][3])),
+         trial_gain_num = if_else(hit == 1 & cue_value_num >= 0, cue_value_num, 
+                                  if_else(hit == 1 & cue_value_num < 0, 0,
+                                          if_else(hit == 0 & cue_value_num >= 0, 0,
+                                                  if_else(hit == 0 & cue_value_num < 0, cue_value_num, -99)))))
+
+## get recent rolling mean
+tc_multimid_mb1 <- tc_multimid_mb1%>%
+  group_by(subject,voi,tr)%>%
+  mutate(last_iti = as.factor(lag(iti,1)),
+         last_hit = lag(hit,1),
+         last_cue = lag(cue_value,1),
+         last_gain = lag(trial_gain,1),
+         last_gain_num = lag(trial_gain_num,1),
+         recent_avg_gain = lag(rollmean(trial_gain_num, 10,fill = c(0,0,0), align = "right"),1),
+         prediction_error_approx = trial_gain_num - recent_avg_gain,
+         gain_contrast = trial_gain_num - last_gain_num,
+         recent_avg_winpercent = lag(rollmean(hit, 10, na.pad = TRUE, align = "right"),1)
+         )
+
+#check rolling winpercent
+ggplot(tc_multimid_mb1%>%
+         filter(voi == "mpfc", subject == subj[1]), aes(x = trial))+
+  geom_point(aes(y = hit, color = hit))+
+  geom_line(aes(y = recent_avg_winpercent),color = "red")
+
+#check rolling mean
+ggplot(tc_multimid_mb1%>%
+         filter(voi == "mpfc", subject == subj[1]), aes(x = trial))+
+  geom_line(aes(y = recent_avg_gain),color = "red")+
+  geom_line(aes(y = trial_gain_num),linetype = "dashed")+
+  geom_line(aes(y = prediction_error_approx), color = "orange",size = 2)
+
+tc_multimid_mb1$recent_avg_winpercent[is.na(tc_multimid_mb1$recent_avg_winpercent)] <- tc_multimid_mb1$total_winpercent[is.na(tc_multimid_mb1$recent_avg_winpercent)]
+tc_multimid_mb1$last_iti <- as.factor(tc_multimid_mb1$last_iti)
+```
+
+## behavioral analysis
+```{r message = FALSE, echo = TRUE}
+# this function shifts the lower bound of the y axis around in a ggplot
+shift_trans = function(d = 0) {
+  scales::trans_new("shift", transform = function(x) x - d, inverse = function(x) x + d)
+}
+```
+
+```{r}
+mid_beh <- unique(tc_multimid_mb1%>%
+                    ungroup()%>%
+  dplyr::select(-voi:-time))
+
+ggplot(mid_beh%>%
+         group_by(cue_value)%>%
+         summarise(hit_rate = mean(hit),
+                   hit_rate_se = sd(hit)/length(subj)), aes(x = cue_value, y = hit_rate, fill = cue_value))+
+  geom_col()+
+  geom_errorbar(aes(ymin = hit_rate - hit_rate_se, ymax = hit_rate + hit_rate_se),width = 0.2)+
+  scale_fill_manual(values = purpleOrange_palette6)+
+  scale_y_continuous(trans = shift_trans(0.3),limits = c(NA, 0.75))
+
+table(mid_beh%>%
+      dplyr::select(trial_gain,cue_value))
+
+ggplot(mid_beh%>%
+         group_by(cue_value,iti)%>%
+         summarise(hit_rate = mean(hit),
+                   hit_rate_se = sd(hit)/length(subj)), aes(x = iti, y = hit_rate, fill = cue_value))+
+  geom_col()+
+  facet_wrap(~cue_value)+
+  geom_errorbar(aes(ymin = hit_rate - hit_rate_se, ymax = hit_rate + hit_rate_se),width = 0.2)+
+  scale_fill_manual(values = purpleOrange_palette6)+
+  scale_y_continuous(trans = shift_trans(0.3),limits = c(NA, 0.75))
+```
+
+```{r}
+cor_mat <- cor(mid_beh%>%
+  ungroup()%>%
+  dplyr::select(trial_gain_num,recent_avg_gain,prediction_error_approx,recent_avg_winpercent), use = "complete.obs")
+
+p_mat <- cor_pmat(mid_beh%>%
+  ungroup()%>%
+  dplyr::select(trial_gain_num,recent_avg_gain,prediction_error_approx,recent_avg_winpercent))
+
+ggcorrplot.mixed(cor_mat, lower = "number",upper = "ellipse", p.mat = p_mat, insig = "label_sig")
+```
+
+#voi analysis
+
+```{r}
+# cue-locked
+tc_multimid_mb1$tr <- as.factor(tc_multimid_mb1$tr)
+
+ggplot(tc_multimid_mb1,aes(x = time, y = BOLD, color = cue_value))+
+  stat_summary(aes(group = cue_value),geom = "line",size=1)+
+  stat_summary(geom = "pointrange",size=0.5)+
+  facet_wrap(~voi)+
+  scale_color_manual(values = purpleOrange_palette6)+
+  annotate("rect", xmin = 6, xmax = 8, ymin = -0.25, ymax = 0.4, 
+           alpha = .2)
+
+# lm1 <- lmer(BOLD ~ cue_value * as.factor(tr) * voi + (voi|subject),tc_multimid_mb1)
+# plot_model(lm1,type = "pred",terms = c("tr","cue_value","voi"),colors = purpleOrange_palette6)+
+#   theme_bw()+
+#   annotate("rect", xmin = 4, xmax = 6, ymin = -0.25, ymax = 0.4, 
+#            alpha = .2)
+```
+
+## by cue value
+```{r}
+lm_ant_nacc <- lmer(BOLD ~ cue_value + (1|subject),tc_multimid_mb1%>%
+       filter(voi == "nacc", tr == 4))
+summary(lm_ant_nacc)
+plot_model(lm_ant_nacc,type = "pred", terms = c("cue_value"))
+
+lm_ant_ains <- lmer(BOLD ~ cue_value + (1|subject),tc_multimid_mb1%>%
+       filter(voi == "anteriorinsula", tr == 4))
+summary(lm_ant_ains)
+plot_model(lm_ant_ains,type = "pred", terms = c("cue_value"))
+```
+
+## by hit or miss
+```{r}
+# cue-locked
+ggplot(tc_multimid_mb1,aes(x = time, y = BOLD, color = as.factor(hit)))+
+  stat_summary(geom = "line",size=1)+
+  stat_summary(geom = "pointrange",size=0.5)+
+  facet_wrap(~voi)+
+  scale_color_manual(values = purpleOrange_palette2)+
+  annotate("rect", xmin = 12, xmax = 14, ymin = -0.25, ymax = 0.4, 
+           alpha = .2)+
+  labs(title = "hit vs. miss")
+
+lm_hit <- lmer(BOLD ~ hit + (1|subject),tc_multimid_mb1%>%
+       filter(voi == "mpfc", tr == 7))
+summary(lm_hit)
+```
+
+
+## by outcome value
+```{r warning = FALSE, message = FALSE, fig.width=6,fig.height=8}
+# cue-locked
+ggplot(tc_multimid_mb1,aes(x = time, y = BOLD, group = hit, color = cue_value))+
+  stat_summary(geom = "line",size=1, aes(linetype = if_else(tc_multimid_mb1$hit == 1, "solid","dashed")))+
+  stat_summary(geom = "pointrange",size=0.5)+
+  facet_wrap(~cue_value+voi)+
+  scale_color_manual(values = purpleOrange_palette6)+
+  annotate("rect", xmin = 12, xmax = 14, ymin = -0.25, ymax = 0.4, 
+           alpha = .2)+
+  annotate("rect", xmin = 6, xmax = 8, ymin = -0.25, ymax = 0.4, 
+           alpha = .2, fill = "steelblue")
+```
+
+```{r}
+## trial_gain does not work because +$0 has multiple meanings
+lm_gain <- lmer(BOLD ~ trial_gain + (1|subject),tc_multimid_mb1%>%
+       filter(voi == "mpfc", tr == 7))
+summary(lm_gain)
+
+lm_gain_by_cue <- lmer(BOLD ~ cue_value * hit + (1|subject),tc_multimid_mb1%>%
+       filter(voi == "mpfc", tr == 7))
+summary(lm_gain_by_cue)
+plot_model(lm_gain_by_cue, type = "pred",terms = c("cue_value","hit"))
+
+plot_model(lmer(BOLD ~ trial_gain + (1|subject),tc_multimid_mb1%>%
+       filter(voi == "mpfc", tr == 7)), type = "pred",terms = c("trial_gain"))
+
+ggplot(tc_multimid_mb1%>%filter(cue_value == "+$5"),aes(x = time, y = BOLD, color = as.factor(hit)))+
+  stat_summary(geom = "line",size=1)+
+  stat_summary(geom = "pointrange",size=0.5)+
+  facet_wrap(~voi)+
+  scale_color_manual(values = purpleOrange_palette2)+
+  annotate("rect", xmin = 12, xmax = 14, ymin = -0.25, ymax = 0.4, 
+           alpha = .2)+
+  labs(title = "+$5 gain vs. no-gain")
+
+ggplot(tc_multimid_mb1%>%filter(cue_value == "+$1"),aes(x = time, y = BOLD, color = as.factor(hit)))+
+  stat_summary(geom = "line",size=1)+
+  stat_summary(geom = "pointrange",size=0.5)+
+  facet_wrap(~voi)+
+  scale_color_manual(values = purpleOrange_palette2)+
+  annotate("rect", xmin = 12, xmax = 14, ymin = -0.25, ymax = 0.4, 
+           alpha = .2)+
+  labs(title = "+$1 gain vs. no-gain")
+```
+
+# functional form of anticipatory signal
+```{r}
+voi_form <- tc_multimid_mb1%>%
+       filter(tr == 4)%>%
+  group_by(voi,subject,cue_value)%>%
+  summarise(BOLD = mean(BOLD,na.rm = TRUE))
+voi_form$cue_value <- factor(voi_form$cue_value, levels = c("-$5","-$1","-$0","+$0","+$1","+$5"))
+
+ggplot(voi_form,
+       aes(x = cue_value, y = BOLD))+
+  facet_wrap(~voi)+
+  geom_point(alpha=0.3)+
+  geom_line(aes(group = subject))+
+  stat_summary(geom = "pointrange", color = "red")
+```
+
+
+# context-modulated anticopatory activity
+```{r}
+df_lm_ant <- tc_multimid_mb1%>%
+  dplyr::select(trial, hit, tr,time, cue_value, cue_value_num, voi, BOLD,recent_avg_gain,trial_gain, prediction_error_approx,recent_avg_winpercent,drift,last_gain,gain_contrast,last_iti)%>%
+  filter(tr == 4)
+df_lm_ant$trial_gain <- factor(df_lm_ant$trial_gain, levels = c("-$5","-$1","-$0","+$0","+$1","+$5"))
+df_lm_ant$cue_value <- factor(df_lm_ant$cue_value, levels = c("-$5","-$1","-$0","+$0","+$1","+$5"))
+
+df_lm_ant$recent_avg_winpercent <- as.numeric(df_lm_ant$recent_avg_winpercent)
+
+```
+
+## nacc
+```{r}
+lm_nacc_1 <- lmer(BOLD ~ cue_value + (1|subject),df_lm_ant%>%filter(voi == "nacc"))
+
+plot_model(lm_nacc_1, type = "pred", terms = c("cue_value"),colors = purpleOrange_palette2)+
+  geom_line()
+
+lm_nacc_2 <- lmer(BOLD ~ cue_value * recent_avg_winpercent  + (1|subject),df_lm_ant%>%filter(voi == "nacc"))
+
+plot_model(lm_nacc_2, type = "pred", terms = c("cue_value","recent_avg_winpercent[0,0.5,1]"),colors = purpleOrange_palette3)+
+  geom_line()
+
+summary(lm_nacc_2)
+
+lm_nacc_3 <- lmer(BOLD ~ recent_avg_winpercent +(1|subject),df_lm_ant%>%filter(voi == "nacc", cue_value == "+$5"))
+# + last_gain
+summary(lm_nacc_3)
+
+plot_model(lm_nacc_3, type = "pred", terms = c("recent_avg_winpercent"))+
+  geom_vline(xintercept = 0.66, linetype = "dashed")+
+  labs(title = "B = -0.4481, p = .005")
+```
+
+
+
+
+## ains (none)
+```{r}
+lm_ains_1 <- lmer(BOLD ~ cue_value + (1|subject),df_lm_ant%>%filter(voi == "anteriorinsula"))
+
+plot_model(lm_ains_1, type = "pred", terms = c("cue_value"),colors = purpleOrange_palette2)+
+  geom_line()
+
+lm_ains_2 <- lmer(BOLD ~ cue_value * recent_avg_winpercent  + (1|subject),df_lm_ant%>%filter(voi == "anteriorinsula"))
+
+plot_model(lm_ains_2, type = "pred", terms = c("cue_value","recent_avg_winpercent[0,0.5,1]"),colors = purpleOrange_palette3)+
+  geom_line()
+
+summary(lm_ains_2)
+
+lm_ains_3 <- lmer(BOLD ~ recent_avg_winpercent + drift +(1|subject),df_lm_ant%>%filter(voi == "anteriorinsula", cue_value == "+$5"))
+
+summary(lm_ains_3)
+
+plot_model(lm_ains_3, type = "pred", terms = c("recent_avg_winpercent"))
+```
+
+# context-modulated outcome activity
+```{r}
+df_lm_out <- tc_multimid_mb1%>%
+  dplyr::select(trial, hit, tr,time, cue_value, cue_value_num, voi, BOLD,recent_avg_gain,trial_gain, prediction_error_approx,recent_avg_winpercent,drift, last_gain, gain_contrast)%>%
+  filter(tr == 7)
+df_lm_out$trial_gain <- factor(df_lm_out$trial_gain, levels = c("-$5","-$1","-$0","+$0","+$1","+$5"))
+df_lm_out$cue_value <- factor(df_lm_out$cue_value, levels = c("-$5","-$1","-$0","+$0","+$1","+$5"))
+
+df_lm_out$recent_avg_winpercent <- as.numeric(df_lm_out$recent_avg_winpercent)
+```
+
+## mpfc
+```{r}
+lm_mpfc_1 <- lmer(BOLD ~ cue_value * hit + (1|subject),df_lm_out%>%filter(voi == "mpfc"))
+
+plot_model(lm_mpfc_1, type = "pred", terms = c("cue_value","hit"),colors = purpleOrange_palette2)+
+  geom_line()
+
+lm_mpfc_2 <- lmer(BOLD ~ cue_value * hit * recent_avg_winpercent  + (1|subject),df_lm_out%>%filter(voi == "mpfc"))
+
+plot_model(lm_mpfc_2, type = "pred", terms = c("cue_value","recent_avg_winpercent[0,0.5,1]","hit"),colors = purpleOrange_palette3)+
+  geom_line()
+
+lm_mpfc_3 <- lmer(BOLD ~  recent_avg_winpercent * hit + (1|subject),df_lm_out%>%filter(voi == "mpfc", cue_value == "+$5"))
+
+plot_model(lm_mpfc_3, type = "pred", terms = c("recent_avg_winpercent","hit"),colors = purpleOrange_palette2)+
+  geom_line()+
+  geom_vline(xintercept = 0.66, linetype = "dashed")+
+  labs(title = "B = -0.52, p = .051")
+
+summary(lm_mpfc_3)
+
+lm_mpfc_4 <- lmer(BOLD ~  hit * last_gain + (1|subject),df_lm_out%>%filter(voi == "mpfc", cue_value == "+$5"))
+
+plot_model(lm_mpfc_4, type = "pred", terms = c("last_gain","hit"),colors = purpleOrange_palette2)+
+  geom_line()+
+  geom_vline(xintercept = 0.66, linetype = "dashed")+
+  geom_hline(yintercept = 0, linetype = "dashed")
+```
+
+### Prediction error
+```{r}
+lm_mpfc_4 <- lmer(BOLD ~ scale(prediction_error_approx) + (1|subject),df_lm_out%>%filter(voi == "mpfc", cue_value == "+$5"))
+summary(lm_mpfc_4)
+
+plot_model(lm_mpfc_4, type = "pred", terms = c("prediction_error_approx"),colors = purpleOrange_palette3)+
+  geom_line()+
+  geom_vline(xintercept = 5, linetype = "dashed")+
+  geom_hline(yintercept = 0, linetype = "dashed")+
+  labs(title = "B = 0.14, p < .001")
+
+
+lm_mpfc_5 <- lmer(BOLD ~ prediction_error_approx + recent_avg_winpercent + recent_avg_gain + (1|subject),df_lm_out%>%filter(voi == "mpfc", cue_value == "+$5"))
+summary(lm_mpfc_5)
+
+plot_model(lm_mpfc_5, type = "pred", terms = c("prediction_error_approx"),colors = purpleOrange_palette3)+
+  geom_line()+
+  geom_vline(xintercept = 5, linetype = "dashed")+
+  geom_hline(yintercept = 0, linetype = "dashed")
+
+plot_model(lm_mpfc_5, type = "pred", terms = c("recent_avg_winpercent"),colors = purpleOrange_palette3)+
+  geom_line()
+```
+
+### gain contrast (similar to PE)
+```{r}
+lm_mpfc_6 <- lmer(BOLD ~ gain_contrast + (1|subject),df_lm_out%>%filter(voi == "mpfc", cue_value == "+$5"))
+summary(lm_mpfc_6)
+```
+
+## wm
+```{r}
+lm_wm_1 <- lmer(BOLD ~ cue_value * hit + (1|subject),df_lm_out%>%filter(voi == "wm"))
+
+plot_model(lm_wm_1, type = "pred", terms = c("cue_value","hit"),colors = purpleOrange_palette2)+
+  geom_line()
+
+lm_wm_2 <- lmer(BOLD ~  recent_avg_winpercent + (1|subject),df_lm_out%>%filter(voi == "wm", cue_value == "+$5", hit == 1))
+
+plot_model(lm_wm_2, type = "pred", terms = c("recent_avg_winpercent"),colors = purpleOrange_palette3)+
+  geom_line()
+
+summary(lm_wm_2)
+```
+
+# effect of last trial on this trial
+## ITI
+### iti range
+```{r}
+iti_mod_lm <- lmer(BOLD ~ as.factor(time) * as.factor(hit) * cue_value + (1|subject),tc_multimid_mb1%>%filter(voi == "nacc"))
+plot_model(iti_mod_lm, type = "pred", terms = c("time","hit","cue_value"),colors = purpleOrange_palette2)+
+  geom_hline(yintercept = 0)+
+  annotate("rect", xmin = 10, xmax = 18, ymin = -0.4, ymax = 0.4, 
+           alpha = .2)+
+  geom_vline(xintercept = c(10,12,14), linetype = "dashed")+
+  labs(title = "Nacc")
+```
+
+```{r}
+nacc_iti_mod <- tc_multimid_mb1%>%
+  dplyr::select(trial, hit, tr,time, cue_value, cue_value_num, voi, BOLD,recent_avg_gain,trial_gain, prediction_error_approx,recent_avg_winpercent,drift,last_gain,gain_contrast,last_iti,last_hit,last_cue)%>%
+  filter(voi == "nacc")%>%
+  mutate(tr = as.factor(tr),
+         last_iti = as.factor(last_iti))
+
+lm_nacc_iti <- lmer(BOLD ~ last_iti * tr * last_gain + (1|subject),nacc_iti_mod)
+
+plot_model(lm_nacc_iti, type = "pred", terms = c("tr","last_iti","last_gain"),colors = purpleOrange_palette3)+
+  geom_line()+
+  theme_classic()+
+  annotate("rect", xmin = 1, xmax = 2, ymin = -0.6, ymax = 0.5, 
+           alpha = .2)+
+  labs(title = "Nacc response by last gain and last iti")
+
+lm_nacc_iti_earn5 <- lmer(BOLD ~ last_iti * tr * last_hit + cue_value * tr + (1|subject),nacc_iti_mod%>%filter(last_cue == "+$5"))
+plot_model(lm_nacc_iti_earn5, type = "pred", terms = c("tr","last_hit","last_iti"),colors = purpleOrange_palette2)+
+  geom_line()+
+  theme_classic()+
+  annotate("rect", xmin = 1, xmax = 2, ymin = -0.6, ymax = 0.5, 
+           alpha = .2)+
+  geom_hline(yintercept = 0, linetype = "dashed")+
+  labs(title = "Nacc response by last hit and last iti (last cue +$5)")
+```
+
+```{r}
+iti_mod <- tc_multimid_mb1%>%
+  dplyr::select(trial, hit, tr,time, cue_value, cue_value_num, voi, BOLD,recent_avg_gain,trial_gain, prediction_error_approx,recent_avg_winpercent,drift,last_gain,gain_contrast,last_iti,last_hit, last_cue)%>%
+  mutate(tr = as.factor(tr))
+
+lm_iti5 <- lmer(BOLD ~ last_iti * tr * voi + (1|subject),iti_mod%>%filter(cue_value == "+$5"))
+
+plot_model(lm_iti5, type = "pred", terms = c("tr","last_iti","voi"),colors = purpleOrange_palette3)+
+  geom_hline(yintercept = 0)+
+  geom_line()+
+  annotate("rect", xmin = 1, xmax = 2, ymin = -0.6, ymax = 0.5, 
+           alpha = .2)+
+  labs(title = "Brain response collapsed at cue +$5")
+
+lm_iti_5 <- lmer(BOLD ~ last_iti * tr * voi + (1|subject),iti_mod%>%filter(cue_value == "-$5"))
+
+plot_model(lm_iti_5, type = "pred", terms = c("tr","last_iti","voi"),colors = purpleOrange_palette3)+
+  geom_hline(yintercept = 0)+
+  geom_line()+
+  annotate("rect", xmin = 1, xmax = 2, ymin = -0.6, ymax = 0.5, 
+           alpha = .2)+
+  labs(title = "Brain response collapsed at cue -$5")
+
+lm_iti_all <- lmer(BOLD ~ last_iti * tr * voi + (1|subject),iti_mod)
+
+plot_model(lm_iti_all, type = "pred", terms = c("tr","last_iti","voi"),colors = purpleOrange_palette3)+
+  geom_hline(yintercept = 0)+
+  geom_line()+
+  annotate("rect", xmin = 1, xmax = 2, ymin = -0.3, ymax = 0.3, 
+           alpha = .2)+
+  labs(title = "Brain response collapsed across all cues")
+
+lm_iti_tr1 <- lmer(BOLD ~ last_iti * voi * last_gain + (1|subject),iti_mod%>%filter(tr == 1))
+summary(lm_iti_tr1)
+
+plot_model(lm_iti_tr1, type = "pred", terms = c("last_gain","last_iti","voi"),colors = purpleOrange_palette3)+
+  geom_hline(yintercept = 0)+
+  geom_line()
+```
+
+## last gain * iti
+```{r}
+lm_nacc_iti_gain_tr1 <- lmer(BOLD ~ last_iti * last_cue * last_hit + cue_value + (1|subject),iti_mod%>%filter(tr == 1,voi == "nacc"))
+plot_model(lm_nacc_iti_gain_tr1, type = "pred", terms = c("last_iti","last_hit","last_cue"),colors = purpleOrange_palette2)+
+  geom_line()+
+  labs(title = "Nacc response influenced by last trial's gain")
+```
+#intertrial correlated of BOLD signal
+```{r}
+df_time <- tc_multimid_mb1%>%
+  dplyr::select(subject,trial, tr, BOLD, voi,last_iti, last_gain)%>%
+  group_by(subject,voi)%>%
+  pivot_wider(names_from = tr,values_from = BOLD, names_prefix = "BOLD_")%>%
+  mutate_at(vars(BOLD_1:BOLD_10), list(lag = ~ lag(.x, 1)))%>%
+  mutate_at(vars(BOLD_1_lag:BOLD_10_lag), list(`2` = ~ lag(.x, 1)))%>%
+  mutate_at(vars(BOLD_1_lag_2:BOLD_10_lag_2), list(`3` = ~ lag(.x, 1)))%>%
+  mutate_at(vars(BOLD_1_lag_2_3:BOLD_10_lag_2_3), list(`4` = ~ lag(.x, 1)))
+
+names(df_time)
+
+lm_time <- lmer(BOLD_1 ~ BOLD_8_lag * last_iti + (1|subject),df_time%>%filter(voi == "nacc"))
+summary(lm_time)
+plot_model(lm_time, type = "pred", terms = c("BOLD_8_lag","last_iti"), show.data = TRUE)
+
+lm_time2 <- lmer(BOLD_1 ~ BOLD_8_lag * last_iti * voi + (1|subject),df_time)
+summary(lm_time2)
+plot_model(lm_time2, type = "pred", terms = c("BOLD_8_lag","last_iti","voi"), show.data = TRUE)
+```
